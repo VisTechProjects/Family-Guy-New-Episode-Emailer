@@ -1,0 +1,15 @@
+{
+    "email": {
+        "smtp_server": "smtp.gmail.com",
+        "smtp_port": 587,
+        "username": "@gmail.com",
+        "password": "",
+        "to": [
+            "@hotmail.com"
+        ]
+    },
+    "tv_show": {
+        "name": "Family Guy",
+        "api_url": "https://api.tvmaze.com/singlesearch/shows?q=family-guy&embed=episodes"
+    }
+}
