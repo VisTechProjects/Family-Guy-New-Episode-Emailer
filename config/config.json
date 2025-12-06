@@ -2,10 +2,10 @@
     "email": {
         "smtp_server": "smtp.gmail.com",
         "smtp_port": 587,
-        "username": "@gmail.com",
-        "password": "",
+        "username": "vis321123@gmail.com",
+        "password": "elqb ljtk lwys camq",
         "to": [
-            "@hotmail.com"
+            "vis321@hotmail.com"
         ]
     },
     "tv_show": {
