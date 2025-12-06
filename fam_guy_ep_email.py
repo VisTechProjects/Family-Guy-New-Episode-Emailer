@@ -8,6 +8,7 @@ from string import Template
 import re
 import os
 import logging
+import argparse
 
 # Get the directory where this script is located
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -16,14 +17,23 @@ CONFIG_FILE = os.path.join(SCRIPT_DIR, "config", "config.json")
 TEMPLATE_FILE = os.path.join(SCRIPT_DIR, "config", "email_template.html")
 LOG_FILE = os.path.join(SCRIPT_DIR, "app.log")
 
-# Setup logging - errors only
-logging.basicConfig(
-    filename=LOG_FILE,
-    level=logging.ERROR,
-    format='%(asctime)s | %(levelname)s | %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-log = logging.getLogger(__name__)
+def setup_logging(verbose=False):
+    log = logging.getLogger(__name__)
+    log.setLevel(logging.INFO if verbose else logging.ERROR)
+    fmt = logging.Formatter('%(asctime)s | %(levelname)s | %(message)s', '%Y-%m-%d %H:%M:%S')
+
+    file_handler = logging.FileHandler(LOG_FILE)
+    file_handler.setLevel(logging.ERROR)
+    file_handler.setFormatter(fmt)
+    log.addHandler(file_handler)
+
+    if verbose:
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        console_handler.setFormatter(fmt)
+        log.addHandler(console_handler)
+
+    return log
 
 def load_config():
     with open(CONFIG_FILE, "r") as f:
@@ -33,7 +43,7 @@ def load_template():
     with open(TEMPLATE_FILE, "r", encoding="utf-8") as f:
         return Template(f.read())
 
-def send_email(subject, body, email_config):
+def send_email(subject, body, email_config, log):
     msg = MIMEMultipart()
     msg["From"] = email_config["username"]
     msg["To"] = ", ".join(email_config["to"])
@@ -65,7 +75,7 @@ def save_latest_episode(episode):
             "airdate": episode["airdate"]
         }, f, indent=2)
 
-def fetch_latest_episode():
+def fetch_latest_episode(log):
     url = "https://api.tvmaze.com/singlesearch/shows?q=family+guy&embed=episodes"
 
     try:
@@ -98,6 +108,12 @@ def is_new_episode(latest, previous):
     return not previous or previous["season"] != latest["season"] or previous["episode"] != latest["number"]
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-v', '--verbose', action='store_true', help='Print output to console')
+    args = parser.parse_args()
+
+    log = setup_logging(args.verbose)
+
     try:
         config = load_config()
         html_template = load_template()
@@ -107,13 +123,16 @@ def main():
 
     email_config = config["email"]
     previous_episode = load_previous_episode()
-    latest = fetch_latest_episode()
+    latest = fetch_latest_episode(log)
 
     if latest is None:
         return
 
     if not is_new_episode(latest, previous_episode):
+        log.info("No new episode found")
         return
+
+    log.info(f"New episode: S{latest['season']}E{latest['number']} - {latest['name']}")
 
     subject = f"New Family Guy Episode: S{latest['season']}E{latest['number']}"
     body = html_template.substitute(
@@ -124,8 +143,9 @@ def main():
         summary=latest['summary']
     )
 
-    if send_email(subject, body, email_config):
+    if send_email(subject, body, email_config, log):
         save_latest_episode(latest)
+        log.info("Email sent successfully")
 
 if __name__ == "__main__":
     main()
