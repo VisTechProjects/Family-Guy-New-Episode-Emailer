@@ -15,6 +15,8 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 LATEST_EP_FILE = os.path.join(SCRIPT_DIR, "latest_episode.json")
 CONFIG_FILE = os.path.join(SCRIPT_DIR, "config", "config.json")
 TEMPLATE_FILE = os.path.join(SCRIPT_DIR, "config", "email_template.html")
+TEMPLATE_UPCOMING_FILE = os.path.join(SCRIPT_DIR, "config", "email_template_upcoming.html")
+UPCOMING_NOTIFIED_FILE = os.path.join(SCRIPT_DIR, "upcoming_notified.json")
 LOG_FILE = os.path.join(SCRIPT_DIR, "app.log")
 
 def setup_logging(verbose=False):
@@ -42,6 +44,27 @@ def load_config():
 def load_template():
     with open(TEMPLATE_FILE, "r", encoding="utf-8") as f:
         return Template(f.read())
+
+def load_upcoming_template():
+    with open(TEMPLATE_UPCOMING_FILE, "r", encoding="utf-8") as f:
+        return Template(f.read())
+
+def load_upcoming_notified():
+    if os.path.exists(UPCOMING_NOTIFIED_FILE):
+        with open(UPCOMING_NOTIFIED_FILE, "r") as f:
+            return json.load(f)
+    return []
+
+def save_upcoming_notified(upcoming):
+    ids = [ep["id"] for ep in upcoming[:5]]
+    with open(UPCOMING_NOTIFIED_FILE, "w") as f:
+        json.dump(ids, f)
+
+def has_new_upcoming(upcoming, notified_ids):
+    if not upcoming:
+        return False
+    current_ids = [ep["id"] for ep in upcoming[:5]]
+    return current_ids != notified_ids
 
 def send_email(subject, body, email_config, log):
     msg = MIMEMultipart()
@@ -75,7 +98,7 @@ def save_latest_episode(episode):
             "airdate": episode["airdate"]
         }, f, indent=2)
 
-def fetch_latest_episode(log):
+def fetch_episodes(log):
     url = "https://api.tvmaze.com/singlesearch/shows?q=family+guy&embed=episodes"
 
     try:
@@ -84,25 +107,49 @@ def fetch_latest_episode(log):
         data = response.json()
     except requests.RequestException as e:
         log.error(f"Failed to fetch episode data: {e}")
-        return None
+        return None, []
 
     today = date.today().isoformat()
     episodes = data.get("_embedded", {}).get("episodes", [])
 
     if not episodes:
         log.error("No episodes found in API response")
-        return None
+        return None, []
 
     aired = [ep for ep in episodes if ep.get("airdate") and ep["airdate"] <= today]
+    upcoming = [ep for ep in episodes if ep.get("airdate") and ep["airdate"] > today]
 
     if not aired:
         log.error("No aired episodes found")
-        return None
+        return None, upcoming
 
-    latest = max(aired, key=lambda ep: ep["airdate"])
+    latest = max(aired, key=lambda ep: (ep["airdate"], ep["season"], ep["number"]))
     summary = latest.get("summary") or "No summary available."
     latest["summary"] = re.sub(r'</?p>', '', summary).strip()
-    return latest
+    return latest, upcoming
+
+
+def format_upcoming_html(upcoming):
+    if not upcoming:
+        return ""
+
+    rows = ""
+    for ep in upcoming[:5]:
+        title = ep.get("name") or "TBA"
+        airdate = ep.get("airdate") or "TBA"
+        rows += f"<tr><td>S{ep['season']}E{ep['number']}</td><td>{title}</td><td>{airdate}</td></tr>"
+
+    return f"""
+      <p><strong>📅 Upcoming Episodes:</strong></p>
+      <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+        <tr style="background-color: #f0f0f0;">
+          <th style="padding: 8px; text-align: left; border-bottom: 1px solid #ddd;">Episode</th>
+          <th style="padding: 8px; text-align: left; border-bottom: 1px solid #ddd;">Title</th>
+          <th style="padding: 8px; text-align: left; border-bottom: 1px solid #ddd;">Air Date</th>
+        </tr>
+        {rows}
+      </table>
+    """
 
 def is_new_episode(latest, previous):
     return not previous or previous["season"] != latest["season"] or previous["episode"] != latest["number"]
@@ -117,35 +164,45 @@ def main():
     try:
         config = load_config()
         html_template = load_template()
+        upcoming_template = load_upcoming_template()
     except Exception as e:
         log.error(f"Failed to load config/template: {e}")
         return
 
     email_config = config["email"]
     previous_episode = load_previous_episode()
-    latest = fetch_latest_episode(log)
+    notified_upcoming = load_upcoming_notified()
+    latest, upcoming = fetch_episodes(log)
 
-    if latest is None:
-        return
+    new_ep = latest and is_new_episode(latest, previous_episode)
 
-    if not is_new_episode(latest, previous_episode):
-        log.info("No new episode found")
-        return
-
-    log.info(f"New episode: S{latest['season']}E{latest['number']} - {latest['name']}")
-
-    subject = f"New Family Guy Episode: S{latest['season']}E{latest['number']}"
-    body = html_template.substitute(
-        title=latest['name'],
-        season=latest['season'],
-        episode=latest['number'],
-        airdate=latest['airdate'],
-        summary=latest['summary']
-    )
-
-    if send_email(subject, body, email_config, log):
-        save_latest_episode(latest)
-        log.info("Email sent successfully")
+    if new_ep:
+        log.info(f"New episode: S{latest['season']}E{latest['number']} - {latest['name']}")
+        subject = f"New Family Guy Episode: S{latest['season']}E{latest['number']}"
+        upcoming_html = format_upcoming_html(upcoming)
+        body = html_template.substitute(
+            title=latest['name'],
+            season=latest['season'],
+            episode=latest['number'],
+            airdate=latest['airdate'],
+            summary=latest['summary'],
+            upcoming=upcoming_html
+        )
+        if send_email(subject, body, email_config, log):
+            save_latest_episode(latest)
+            if upcoming:
+                save_upcoming_notified(upcoming)
+            log.info("New episode email sent")
+    elif has_new_upcoming(upcoming, notified_upcoming):
+        log.info(f"New upcoming episodes detected: {len(upcoming)} scheduled")
+        subject = "Family Guy: Upcoming Episodes"
+        upcoming_html = format_upcoming_html(upcoming)
+        body = upcoming_template.substitute(upcoming=upcoming_html)
+        if send_email(subject, body, email_config, log):
+            save_upcoming_notified(upcoming)
+            log.info("Upcoming episodes email sent")
+    else:
+        log.info("No new episode or upcoming changes")
 
 if __name__ == "__main__":
     main()
