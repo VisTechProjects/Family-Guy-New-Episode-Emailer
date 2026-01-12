@@ -3,3 +3,5 @@ latest_episode.json
 app.log
 __pycache__/
 .vscode/
+.claude/
+.env
