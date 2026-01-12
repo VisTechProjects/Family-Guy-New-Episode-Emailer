@@ -5,3 +5,4 @@ __pycache__/
 .vscode/
 .claude/
 .env
+upcoming_notified.json
